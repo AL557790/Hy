@@ -1,7 +1,7 @@
 import subprocess
 import sys
 
-# تثبيت المكتبات تلقائياً إذا لم تكن موجودة
+# تثبيت المكتبات تلقائياً
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
@@ -27,6 +27,18 @@ DOWNLOAD_FOLDER = "downloads"
 if not os.path.exists(DOWNLOAD_FOLDER):
     os.makedirs(DOWNLOAD_FOLDER)
 
+
+# الصفحة الرئيسية
+@app.route("/")
+def home():
+    return {
+        "status": "Server is running",
+        "endpoint": "/download",
+        "method": "POST"
+    }
+
+
+# تحميل الفيديو
 @app.route("/download", methods=["POST"])
 def download_video():
     data = request.json
@@ -52,6 +64,13 @@ def download_video():
 
     except Exception as e:
         return jsonify({"error": str(e)})
+
+
+# منع خطأ favicon
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
