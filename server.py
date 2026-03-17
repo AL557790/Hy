@@ -20,140 +20,128 @@ try:
 except:
     install("yt-dlp")
 
-from flask import Flask,request,jsonify,send_file
+try:
+    from flask_cors import CORS
+except:
+    install("flask-cors")
+    from flask_cors import CORS
+
+from flask import Flask, request, jsonify, send_file
 import yt_dlp
 
 app = Flask(__name__)
+CORS(app)  # ✅ يسمح لأي موقع بالاتصال بالـ API
 
-DOWNLOAD_FOLDER="downloads"
+DOWNLOAD_FOLDER = "downloads"
 
 if not os.path.exists(DOWNLOAD_FOLDER):
     os.makedirs(DOWNLOAD_FOLDER)
 
-BOT_URL="https://hy-z1b1.onrender.com"
+BOT_URL = "https://hy-z1b1.onrender.com"
 
 
 @app.route("/")
 def home():
     return {
-        "status":"running",
-        "endpoints":[
-            "/info",
-            "/download"
-        ]
+        "status": "running",
+        "endpoints": ["/info", "/download"]
     }
 
 
-@app.route("/info",methods=["POST"])
+@app.route("/info", methods=["POST", "OPTIONS"])
 def info():
+    if request.method == "OPTIONS":
+        return '', 204
 
-    data=request.json
-    url=data.get("url")
+    data = request.json
+    url = data.get("url")
 
     if not url:
-        return jsonify({"error":"no url"}),400
+        return jsonify({"error": "no url"}), 400
 
     try:
+        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            info = ydl.extract_info(url, download=False)
 
-        with yt_dlp.YoutubeDL({"quiet":True}) as ydl:
-            info=ydl.extract_info(url,download=False)
-
-        formats=[]
-
+        formats = []
         for f in info["formats"]:
-
             if f.get("ext"):
-
                 formats.append({
-                    "id":f.get("format_id"),
-                    "ext":f.get("ext"),
-                    "height":f.get("height"),
-                    "filesize":f.get("filesize")
+                    "id":       f.get("format_id"),
+                    "ext":      f.get("ext"),
+                    "height":   f.get("height"),
+                    "filesize": f.get("filesize")
                 })
 
         return jsonify({
-            "title":info.get("title"),
-            "thumbnail":info.get("thumbnail"),
-            "duration":info.get("duration"),
-            "formats":formats
+            "title":     info.get("title"),
+            "thumbnail": info.get("thumbnail"),
+            "duration":  info.get("duration"),
+            "formats":   formats
         })
 
     except Exception as e:
-        return jsonify({"error":str(e)})
+        return jsonify({"error": str(e)})
 
 
-@app.route("/download",methods=["POST"])
+@app.route("/download", methods=["POST", "OPTIONS"])
 def download():
+    if request.method == "OPTIONS":
+        return '', 204
 
-    data=request.json
-    url=data.get("url")
-    format_id=data.get("format","best")
+    data = request.json
+    url = data.get("url")
+    format_id = data.get("format", "best")
 
     if not url:
-        return jsonify({"error":"no url"}),400
+        return jsonify({"error": "no url"}), 400
 
-    fileid=str(uuid.uuid4())
-    path=os.path.join(DOWNLOAD_FOLDER,fileid)
+    fileid = str(uuid.uuid4())
+    path = os.path.join(DOWNLOAD_FOLDER, fileid)
 
-    ydl_opts={
-        "format":format_id,
-        "outtmpl":path+".%(ext)s",
-        "quiet":True,
-        "noplaylist":True,
-        "nocheckcertificate":True
+    ydl_opts = {
+        "format":             format_id,
+        "outtmpl":            path + ".%(ext)s",
+        "quiet":              True,
+        "noplaylist":         True,
+        "nocheckcertificate": True
     }
 
     try:
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info=ydl.extract_info(url,download=True)
+            info = ydl.extract_info(url, download=True)
 
-        ext=info["ext"]
-        final=path+"."+ext
+        ext   = info["ext"]
+        final = path + "." + ext
 
-        return send_file(final,as_attachment=True)
+        return send_file(final, as_attachment=True)
 
     except Exception as e:
-        return jsonify({"error":str(e)})
-
+        return jsonify({"error": str(e)})
 
 
 def delete_old_files():
-
     while True:
-
-        files=glob.glob(DOWNLOAD_FOLDER+"/*")
-
-        now=time.time()
-
+        files = glob.glob(DOWNLOAD_FOLDER + "/*")
+        now   = time.time()
         for f in files:
-
             if os.path.isfile(f):
-
-                if now-os.path.getmtime(f) > 600:
+                if now - os.path.getmtime(f) > 600:
                     os.remove(f)
-
         time.sleep(60)
 
 
-
 def ping():
-
     while True:
-
         try:
             requests.get(BOT_URL)
             print("Ping OK")
         except:
             print("Ping failed")
-
         time.sleep(5)
 
 
-
-if __name__=="__main__":
-
+if __name__ == "__main__":
     threading.Thread(target=ping).start()
     threading.Thread(target=delete_old_files).start()
-
-    app.run(host="0.0.0.0",port=5000)
+    app.run(host="0.0.0.0", port=5000)
