@@ -8,7 +8,7 @@ import uuid
 import glob
 
 def install(package):
-    subprocess.check_call([sys.executable,"-m","pip","install",package])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 try:
     import flask
@@ -40,6 +40,17 @@ if not os.path.exists(DOWNLOAD_FOLDER):
 BOT_URL = "https://hy-z1b1.onrender.com"
 
 
+# 🔧 تحويل روابط Facebook share إلى الرابط الحقيقي
+def fix_facebook_share(url):
+    if "facebook.com/share" in url:
+        try:
+            r = requests.get(url, allow_redirects=True, timeout=10)
+            return r.url
+        except:
+            return url
+    return url
+
+
 @app.route("/")
 def home():
     return {
@@ -65,13 +76,15 @@ def info():
     if not url:
         return jsonify({"error": "no url"}), 400
 
+    # إصلاح رابط Facebook
+    url = fix_facebook_share(url)
+
     try:
         ydl_opts = {
             "quiet": True,
             "nocheckcertificate": True,
             "http_headers": {
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://www.facebook.com/"
+                "User-Agent": "Mozilla/5.0"
             }
         }
 
@@ -111,6 +124,9 @@ def download():
     if not url:
         return jsonify({"error": "no url"}), 400
 
+    # إصلاح رابط Facebook
+    url = fix_facebook_share(url)
+
     fileid = str(uuid.uuid4())
     path = os.path.join(DOWNLOAD_FOLDER, fileid)
 
@@ -120,14 +136,12 @@ def download():
         "quiet": True,
         "noplaylist": True,
         "nocheckcertificate": True,
+        "geo_bypass": True,
 
-        # مهم لفيسبوك
         "http_headers": {
             "User-Agent": "Mozilla/5.0",
             "Referer": "https://www.facebook.com/"
-        },
-
-        "geo_bypass": True
+        }
     }
 
     try:
@@ -143,6 +157,7 @@ def download():
         return jsonify({"error": str(e)})
 
 
+# حذف الملفات القديمة بعد 10 دقائق
 def delete_old_files():
     while True:
         files = glob.glob(DOWNLOAD_FOLDER + "/*")
@@ -156,6 +171,7 @@ def delete_old_files():
         time.sleep(60)
 
 
+# إبقاء السيرفر نشط
 def ping():
     while True:
         try:
