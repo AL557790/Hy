@@ -30,7 +30,7 @@ from flask import Flask, request, jsonify, send_file
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app)  # ✅ يسمح لأي موقع بالاتصال بالـ API
+CORS(app)
 
 DOWNLOAD_FOLDER = "downloads"
 
@@ -44,6 +44,12 @@ BOT_URL = "https://hy-z1b1.onrender.com"
 def home():
     return {
         "status": "running",
+        "supported": [
+            "YouTube",
+            "Facebook",
+            "Instagram",
+            "TikTok"
+        ],
         "endpoints": ["/info", "/download"]
     }
 
@@ -60,24 +66,33 @@ def info():
         return jsonify({"error": "no url"}), 400
 
     try:
-        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        ydl_opts = {
+            "quiet": True,
+            "nocheckcertificate": True,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://www.facebook.com/"
+            }
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         formats = []
         for f in info["formats"]:
             if f.get("ext"):
                 formats.append({
-                    "id":       f.get("format_id"),
-                    "ext":      f.get("ext"),
-                    "height":   f.get("height"),
+                    "id": f.get("format_id"),
+                    "ext": f.get("ext"),
+                    "height": f.get("height"),
                     "filesize": f.get("filesize")
                 })
 
         return jsonify({
-            "title":     info.get("title"),
+            "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
-            "duration":  info.get("duration"),
-            "formats":   formats
+            "duration": info.get("duration"),
+            "formats": formats
         })
 
     except Exception as e:
@@ -100,18 +115,26 @@ def download():
     path = os.path.join(DOWNLOAD_FOLDER, fileid)
 
     ydl_opts = {
-        "format":             format_id,
-        "outtmpl":            path + ".%(ext)s",
-        "quiet":              True,
-        "noplaylist":         True,
-        "nocheckcertificate": True
+        "format": format_id,
+        "outtmpl": path + ".%(ext)s",
+        "quiet": True,
+        "noplaylist": True,
+        "nocheckcertificate": True,
+
+        # مهم لفيسبوك
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://www.facebook.com/"
+        },
+
+        "geo_bypass": True
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
-        ext   = info["ext"]
+        ext = info["ext"]
         final = path + "." + ext
 
         return send_file(final, as_attachment=True)
@@ -123,11 +146,13 @@ def download():
 def delete_old_files():
     while True:
         files = glob.glob(DOWNLOAD_FOLDER + "/*")
-        now   = time.time()
+        now = time.time()
+
         for f in files:
             if os.path.isfile(f):
                 if now - os.path.getmtime(f) > 600:
                     os.remove(f)
+
         time.sleep(60)
 
 
@@ -138,10 +163,12 @@ def ping():
             print("Ping OK")
         except:
             print("Ping failed")
+
         time.sleep(5)
 
 
 if __name__ == "__main__":
     threading.Thread(target=ping).start()
     threading.Thread(target=delete_old_files).start()
+
     app.run(host="0.0.0.0", port=5000)
