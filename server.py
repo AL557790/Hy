@@ -6,31 +6,37 @@ import requests
 import os
 import uuid
 import glob
+import traceback
 
 def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+    except Exception as e:
+        print(f"Failed to install {package}: {e}")
 
-try:
-    import flask
-except:
-    install("flask")
-
-try:
-    import yt_dlp
-except:
-    install("yt-dlp")
-
-try:
-    from flask_cors import CORS
-except:
-    install("flask-cors")
-    from flask_cors import CORS
+# تثبيت المكتبات إذا لم تكن موجودة
+for pkg in ["flask", "yt-dlp", "flask-cors", "requests"]:
+    try:
+        __import__(pkg.replace("-", "_"))
+    except ImportError:
+        install(pkg)
 
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app)
+
+# إعداد CORS بشكل صريح وقوي (هذا هو الحل الرئيسي لمشكلة Failed to fetch من HTML)
+CORS(app, resources={
+    r"/*": {
+        "origins": "*",                     # للاختبار فقط - يمكنك لاحقاً تحديد نطاقات معينة
+        "allow_methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "Accept"],
+        "supports_credentials": False,
+        "max_age": 86400                    # cache preflight لمدة يوم
+    }
+})
 
 DOWNLOAD_FOLDER = "downloads"
 
@@ -41,7 +47,6 @@ BOT_URL = "https://hy-z1b1.onrender.com"
 
 
 def fix_facebook_share(url):
-    """تحويل روابط share/r إلى الرابط الحقيقي عبر متابعة الـ redirect"""
     if "facebook.com/share" in url or "web.facebook.com/share" in url:
         try:
             session = requests.Session()
@@ -50,7 +55,6 @@ def fix_facebook_share(url):
             })
             r = session.get(url, allow_redirects=True, timeout=12)
             final_url = r.url
-            # تنظيف الـ parameters الزائدة
             if "?_rdc=1&_rdr" in final_url or "_fb_noscript=1" in final_url:
                 final_url = final_url.split('?')[0]
             print(f"Fixed URL: {final_url}")
@@ -77,7 +81,6 @@ def info():
 
     data = request.get_json(silent=True) or {}
     url = data.get("url")
-
     if not url:
         return jsonify({"error": "no url provided"}), 400
 
@@ -111,10 +114,11 @@ def info():
             "title": info.get("title"),
             "thumbnail": info.get("thumbnail"),
             "duration": info.get("duration"),
-            "formats": formats[:15]  # حد أقصى عشان الرد ما يكونش ثقيل
+            "formats": formats[:15]
         })
 
     except Exception as e:
+        print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 
@@ -149,7 +153,6 @@ def download():
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://www.facebook.com/"
         },
-        # محاولة تجنب الاعتماد الشديد على ffmpeg
         "merge_output_format": None if "best" in format_id else "mp4"
     }
 
@@ -163,10 +166,14 @@ def download():
         if not os.path.exists(final_path):
             return jsonify({"error": "file was not created"}), 500
 
-        return send_file(final_path, as_attachment=True, download_name=f"{info.get('title', 'video')}.{ext}")
+        return send_file(
+            final_path,
+            as_attachment=True,
+            download_name=f"{info.get('title', 'video')}.{ext}",
+            mimetype="video/mp4"
+        )
 
     except Exception as e:
-        import traceback
         print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
@@ -177,7 +184,7 @@ def delete_old_files():
             files = glob.glob(os.path.join(DOWNLOAD_FOLDER, "*"))
             now = time.time()
             for f in files:
-                if os.path.isfile(f) and now - os.path.getmtime(f) > 600:  # 10 دقائق
+                if os.path.isfile(f) and now - os.path.getmtime(f) > 600:
                     try:
                         os.remove(f)
                     except:
@@ -194,18 +201,12 @@ def keep_alive():
             print("Keep-alive ping OK")
         except:
             print("Keep-alive ping failed")
-        time.sleep(300)  # كل 5 دقائق
+        time.sleep(300)
 
 
 if __name__ == "__main__":
     threading.Thread(target=keep_alive, daemon=True).start()
     threading.Thread(target=delete_old_files, daemon=True).start()
 
-    # للاختبار المحلي فقط
-    # import subprocess
-    # try:
-    #     print(subprocess.getoutput("ffmpeg -version"))
-    # except:
-    #     print("ffmpeg not available")
-
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
