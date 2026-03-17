@@ -3,78 +3,157 @@ import sys
 import threading
 import time
 import requests
+import os
+import uuid
+import glob
 
 def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+    subprocess.check_call([sys.executable,"-m","pip","install",package])
 
 try:
     import flask
-except ImportError:
+except:
     install("flask")
 
 try:
     import yt_dlp
-except ImportError:
+except:
     install("yt-dlp")
 
-try:
-    import requests
-except ImportError:
-    install("requests")
-
-from flask import Flask, request, send_file, jsonify
+from flask import Flask,request,jsonify,send_file
 import yt_dlp
-import os
-import uuid
 
 app = Flask(__name__)
 
-DOWNLOAD_FOLDER = "downloads"
+DOWNLOAD_FOLDER="downloads"
+
 if not os.path.exists(DOWNLOAD_FOLDER):
     os.makedirs(DOWNLOAD_FOLDER)
 
+BOT_URL="https://hy-z1b1.onrender.com"
+
+
 @app.route("/")
 def home():
-    return {"status": "Server is running", "endpoint": "/download", "method": "POST"}
+    return {
+        "status":"running",
+        "endpoints":[
+            "/info",
+            "/download"
+        ]
+    }
 
-@app.route("/download", methods=["POST"])
-def download_video():
-    data = request.json
-    url = data.get("url")
+
+@app.route("/info",methods=["POST"])
+def info():
+
+    data=request.json
+    url=data.get("url")
+
     if not url:
-        return jsonify({"error": "No URL provided"}), 400
+        return jsonify({"error":"no url"}),400
 
-    filename = str(uuid.uuid4()) + ".mp4"
-    filepath = os.path.join(DOWNLOAD_FOLDER, filename)
+    try:
 
-    ydl_opts = {
-        "format": "bestvideo+bestaudio/best",
-        "merge_output_format": "mp4",
-        "outtmpl": filepath,
-        "quiet": True,
-        "noplaylist": True,
-        "nocheckcertificate": True
+        with yt_dlp.YoutubeDL({"quiet":True}) as ydl:
+            info=ydl.extract_info(url,download=False)
+
+        formats=[]
+
+        for f in info["formats"]:
+
+            if f.get("ext"):
+
+                formats.append({
+                    "id":f.get("format_id"),
+                    "ext":f.get("ext"),
+                    "height":f.get("height"),
+                    "filesize":f.get("filesize")
+                })
+
+        return jsonify({
+            "title":info.get("title"),
+            "thumbnail":info.get("thumbnail"),
+            "duration":info.get("duration"),
+            "formats":formats
+        })
+
+    except Exception as e:
+        return jsonify({"error":str(e)})
+
+
+@app.route("/download",methods=["POST"])
+def download():
+
+    data=request.json
+    url=data.get("url")
+    format_id=data.get("format","best")
+
+    if not url:
+        return jsonify({"error":"no url"}),400
+
+    fileid=str(uuid.uuid4())
+    path=os.path.join(DOWNLOAD_FOLDER,fileid)
+
+    ydl_opts={
+        "format":format_id,
+        "outtmpl":path+".%(ext)s",
+        "quiet":True,
+        "noplaylist":True,
+        "nocheckcertificate":True
     }
 
     try:
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        return send_file(filepath, as_attachment=True)
+            info=ydl.extract_info(url,download=True)
+
+        ext=info["ext"]
+        final=path+"."+ext
+
+        return send_file(final,as_attachment=True)
+
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify({"error":str(e)})
 
-@app.route("/favicon.ico")
-def favicon():
-    return "", 204
 
-def self_ping():
+
+def delete_old_files():
+
     while True:
+
+        files=glob.glob(DOWNLOAD_FOLDER+"/*")
+
+        now=time.time()
+
+        for f in files:
+
+            if os.path.isfile(f):
+
+                if now-os.path.getmtime(f) > 600:
+                    os.remove(f)
+
+        time.sleep(60)
+
+
+
+def ping():
+
+    while True:
+
         try:
-            requests.get("https://hy-z1b1.onrender.com/")
+            requests.get(BOT_URL)
+            print("Ping OK")
         except:
-            pass
+            print("Ping failed")
+
         time.sleep(5)
 
-if __name__ == "__main__":
-    threading.Thread(target=self_ping).start()
-    app.run(host="0.0.0.0", port=5000)
+
+
+if __name__=="__main__":
+
+    threading.Thread(target=ping).start()
+    threading.Thread(target=delete_old_files).start()
+
+    app.run(host="0.0.0.0",port=5000)
