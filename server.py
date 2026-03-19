@@ -1,72 +1,79 @@
+from flask import Flask, request, jsonify
 import yt_dlp
 import os
 
-path = os.path.join(os.path.expanduser("~"), "Downloads")
+app = Flask(__name__)
 
-# ===== إعدادات تتجاوز bot detection ليوتيوب =====
 YOUTUBE_EXTRACTOR_ARGS = {
     "youtube": {
-        "player_client": ["tv_embedded", "web"],
-        "player_skip": ["webpage", "configs"],
+        "player_client": ["android", "web"],
     }
 }
 
-print("="*60)
-print("            Welcome to Video Downloader")
-print("="*60)
+def get_video_info(url):
+    ydl_opts = {
+        "quiet": True,
+    }
 
-while True:
-    url = input("Enter video URL: ")
+    if "youtube" in url or "youtu.be" in url:
+        ydl_opts["extractor_args"] = YOUTUBE_EXTRACTOR_ARGS
 
-    is_youtube = "youtube.com" in url or "youtu.be" in url
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+@app.route("/info", methods=["GET"])
+def info():
+    url = request.args.get("url")
+    if not url:
+        return jsonify({"error": "No URL provided"})
 
     try:
-        info_opts = {
-            'quiet': True,
-        }
-        if is_youtube:
-            info_opts['extractor_args'] = YOUTUBE_EXTRACTOR_ARGS
+        info = get_video_info(url)
 
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        formats = []
+        for f in info["formats"]:
+            if f.get("height") and f.get("acodec") != "none":
+                formats.append({
+                    "quality": f.get("height"),
+                    "url": f.get("url")
+                })
 
-            print(f"\nTitle: {info['title']}")
-
-            available = False
-            print("\nAvailable Qualities:")
-            for f in info['formats']:
-                if f.get('height') and f.get('acodec') != 'none':
-                    available = True
-                    size = f.get('filesize')
-                    quality = f.get('height')
-                    if size:
-                        size_mb = size / (1024 * 1024)
-                        print(f"Quality: {quality}p | Size: {size_mb:.2f} MB")
-                    else:
-                        print(f"Quality: {quality}p | Size: Unknown")
-
-            if available:
-                print("\nDownloading best quality...")
-
-                options = {
-                    'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
-                    'outtmpl': os.path.join(path, '%(title)s.%(ext)s'),
-                    'quiet': True,
-                    'merge_output_format': 'mp4',
-                }
-                if is_youtube:
-                    options['extractor_args'] = YOUTUBE_EXTRACTOR_ARGS
-
-                with yt_dlp.YoutubeDL(options) as ydl2:
-                    ydl2.download([url])
-                    print(f"\nSaved to: {path}")
-            else:
-                print("No video with audio available")
+        return jsonify({
+            "title": info["title"],
+            "formats": formats
+        })
 
     except Exception as e:
-        print(f"Error: {e}")
+        return jsonify({"error": str(e)})
 
-    again = input("\nDownload another? (yes/no): ")
-    if again.lower() != 'yes':
-        print("Goodbye!")
-        break
+
+@app.route("/download", methods=["GET"])
+def download():
+    url = request.args.get("url")
+
+    if not url:
+        return jsonify({"error": "No URL provided"})
+
+    try:
+        ydl_opts = {
+            "format": "best[ext=mp4][height<=720]/best",
+            "quiet": True,
+        }
+
+        if "youtube" in url or "youtu.be" in url:
+            ydl_opts["extractor_args"] = YOUTUBE_EXTRACTOR_ARGS
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return jsonify({
+                "title": info["title"],
+                "download_url": info["url"]
+            })
+
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
