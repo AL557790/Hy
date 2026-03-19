@@ -1,286 +1,194 @@
 import subprocess, sys, threading, time, requests, os, uuid, glob, traceback, re
 
-# ── Auto-install ─────────────────────────────────────────────
+def install(pkg):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL)
+
 for pkg in ["flask", "yt-dlp", "flask-cors", "requests"]:
     try:
         __import__(pkg.replace("-", "_"))
     except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL)
+        install(pkg)
 
-from flask import Flask, request, jsonify, send_file, Response
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import yt_dlp
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {
-    "origins": "*",
-    "allow_methods": ["GET", "POST", "OPTIONS"],
-    "allow_headers": ["Content-Type"]
-}})
+CORS(app, resources={r"/*": {"origins": "*", "allow_methods": ["GET","POST","OPTIONS"], "allow_headers": ["Content-Type"]}})
 
 DOWNLOAD_FOLDER = "downloads"
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 SERVER_URL = "https://hy-z1b1.onrender.com"
 
-UA_CHROME  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-UA_MOBILE  = "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-
-# ── Helpers ───────────────────────────────────────────────────
+UA_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+UA_MOBILE = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
 
 def fix_url(url):
-    """حل الروابط المختصرة"""
-    SHORT = ["fb.watch", "vm.tiktok.com", "vt.tiktok.com", "t.co", "bit.ly", "instagram.com/reel"]
-    if any(x in url for x in SHORT) or "facebook.com/share" in url:
-        try:
+    try:
+        if any(x in url for x in ["facebook.com/share", "web.facebook.com", "fb.watch", "vm.tiktok", "t.co"]):
             s = requests.Session()
             s.headers["User-Agent"] = UA_CHROME
             r = s.get(url, allow_redirects=True, timeout=15)
-            final = r.url
-            # تنظيف fbclid وغيرها
-            for junk in ["?fbclid=", "&fbclid=", "?_rdc=", "?_fb_noscript="]:
-                if junk in final:
-                    final = final.split(junk)[0]
-            print(f"[fix_url] {url} → {final}")
+            final = r.url.split('?')[0] if any(x in r.url for x in ["_rdc=1","_fb_noscript","fbclid"]) else r.url
+            print(f"Resolved: {url} -> {final}")
             return final
-        except Exception as e:
-            print(f"[fix_url] error: {e}")
+    except Exception as e:
+        print(f"fix_url error: {e}")
     return url
 
 def detect_platform(url):
     if "youtube.com" in url or "youtu.be" in url: return "youtube"
-    if "tiktok.com" in url:                        return "tiktok"
-    if "instagram.com" in url:                     return "instagram"
-    if "twitter.com" in url or "x.com" in url:    return "twitter"
+    if "tiktok.com" in url: return "tiktok"
+    if "instagram.com" in url: return "instagram"
+    if "twitter.com" in url or "x.com" in url: return "twitter"
     if "facebook.com" in url or "fb.watch" in url: return "facebook"
-    if "reddit.com" in url or "redd.it" in url:   return "reddit"
+    if "reddit.com" in url or "redd.it" in url: return "reddit"
     return "generic"
 
-def clean_title(t):
-    if not t: return "video"
-    return re.sub(r'[\\/*?:"<>|]', '', t).strip()[:80] or "video"
-
-# ── Format strategies per platform ───────────────────────────
-# كل منصة عندها قائمة format مرتبة من الأفضل للأسهل
-
-FORMATS = {
-    # يوتيوب: نأخذ mp4 مدمج (بدون ffmpeg) — إذا فشل ناخذ أي best
-    "youtube": [
-        "best[ext=mp4][vcodec^=avc][acodec!=none]",
-        "best[ext=mp4][vcodec!=none][acodec!=none]",
-        "best[ext=mp4]/best",
-        "best",
-    ],
-    # تيك توك: أول شيء بدون watermark، إذا فشل ناخذ العادي
-    "tiktok": [
-        "download_addr-0",           # بدون watermark (yt-dlp specific)
-        "best[ext=mp4]/best[ext=mp4]/best",
-        "best",
-    ],
-    # انستغرام
-    "instagram": [
-        "best[ext=mp4]/best",
-        "best",
-    ],
-    # تويتر/X
-    "twitter": [
-        "best[ext=mp4]/best",
-        "best",
-    ],
-    # فيسبوك
-    "facebook": [
-        "best[ext=mp4]/best",
-        "best",
-    ],
-    # ريديت
-    "reddit": [
-        "best[ext=mp4]/best",
-        "best",
-    ],
-    "generic": [
-        "best[ext=mp4]/best",
-        "best",
-    ],
-}
-
-def get_base_opts(platform, outtmpl):
+def build_opts(platform, outtmpl, sim=False):
     h = {"User-Agent": UA_CHROME}
+    base = {
+        "outtmpl": outtmpl, "quiet": True, "no_warnings": True,
+        "noplaylist": True, "nocheckcertificate": True, "geo_bypass": True,
+        "retries": 10, "fragment_retries": 10,
+        "http_headers": h,
+    }
+    if sim: base["simulate"] = True
 
-    if platform == "tiktok":
+    if platform == "youtube":
+        # بدون ffmpeg: نختار فيديو كامل mp4 مدمج مسبقاً
+        base["format"] = "best[ext=mp4][vcodec!=none][acodec!=none]/best[ext=mp4]/best"
+        base["merge_output_format"] = "mp4"
+
+    elif platform == "tiktok":
         h["User-Agent"] = UA_MOBILE
         h["Referer"] = "https://www.tiktok.com/"
+        h["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        # تيك توك: نأخذ أي فورمات متاح
+        base["format"] = "best[ext=mp4]/bestvideo[ext=mp4]/best"
+        base["merge_output_format"] = "mp4"
 
     elif platform == "facebook":
         h["Referer"] = "https://www.facebook.com/"
-        h["Accept-Language"] = "en-US,en;q=0.9"
+        h["Accept-Language"] = "en-US,en;q=0.5"
+        base["format"] = "best[ext=mp4]/best"
+        base["merge_output_format"] = "mp4"
 
     elif platform == "instagram":
         h["Referer"] = "https://www.instagram.com/"
+        base["format"] = "best[ext=mp4]/best"
+        base["merge_output_format"] = "mp4"
 
     elif platform == "twitter":
         h["Referer"] = "https://twitter.com/"
+        base["format"] = "best[ext=mp4]/best"
+        base["merge_output_format"] = "mp4"
 
-    return {
-        "outtmpl":           outtmpl,
-        "quiet":             True,
-        "no_warnings":       True,
-        "noplaylist":        True,
-        "nocheckcertificate":True,
-        "geo_bypass":        True,
-        "retries":           5,
-        "fragment_retries":  5,
-        "http_headers":      h,
-        "merge_output_format": "mp4",
-    }
+    else:
+        base["format"] = "best[ext=mp4]/best"
+        base["merge_output_format"] = "mp4"
 
-def try_download(url, platform, outtmpl, fmt):
-    """محاولة تحميل بفورمات معين"""
-    opts = get_base_opts(platform, outtmpl)
-    opts["format"] = fmt
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-    return info
+    return base
 
-def try_info(url, platform, fmt):
-    """جلب معلومات بدون تحميل"""
-    opts = get_base_opts(platform, "/tmp/info_dummy.%(ext)s")
-    opts["format"] = fmt
-    opts["simulate"] = True
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False)
-
-# ── Routes ────────────────────────────────────────────────────
+def clean_title(t):
+    if not t: return "video"
+    return re.sub(r'[^\w\s\-]', '', t).strip()[:60] or "video"
 
 @app.route("/")
 def home():
-    return jsonify({"status": "running", "endpoints": ["/info", "/download"]})
+    return jsonify({"status": "running"})
 
-
-@app.route("/info", methods=["POST", "OPTIONS"])
+@app.route("/info", methods=["POST","OPTIONS"])
 def info():
-    if request.method == "OPTIONS":
-        return '', 204
-
+    if request.method == "OPTIONS": return '', 204
     data = request.get_json(silent=True) or {}
-    url  = data.get("url", "").strip()
-    if not url:
-        return jsonify({"error": "لم يتم توفير الرابط"}), 400
+    url = data.get("url","").strip()
+    if not url: return jsonify({"error": "لم يتم توفير الرابط"}), 400
 
-    url  = fix_url(url)
+    url = fix_url(url)
     plat = detect_platform(url)
 
-    info_data = None
-    last_err  = None
+    try:
+        opts = build_opts(plat, "/tmp/info_tmp", sim=True)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info_data = ydl.extract_info(url, download=False)
 
-    for fmt in FORMATS.get(plat, FORMATS["generic"]):
-        try:
-            info_data = try_info(url, plat, fmt)
-            if info_data:
-                break
-        except Exception as e:
-            last_err = str(e)
-            print(f"[info] {plat} fmt={fmt} failed: {e}")
-            continue
+        formats, seen = [], set()
+        all_fmts = info_data.get("formats", [])
+        for f in all_fmts:
+            vcodec = f.get("vcodec","none")
+            acodec = f.get("acodec","none")
+            ext = f.get("ext","")
+            h = f.get("height")
+            # يوتيوب: خذ فقط الفورمات المدمجة (فيديو+صوت معاً) أو mp4
+            if plat == "youtube":
+                if vcodec == "none" or acodec == "none": continue
+                if ext not in ("mp4","webm"): continue
+            else:
+                if vcodec == "none": continue
+            key = str(h) if h else f.get("format_note","")
+            if not key or key in seen: continue
+            seen.add(key)
+            formats.append({
+                "id": f.get("format_id"),
+                "ext": ext or "mp4",
+                "height": h,
+                "filesize": f.get("filesize") or f.get("filesize_approx"),
+                "format_note": f.get("format_note","")
+            })
+        formats.sort(key=lambda x: x.get("height") or 0, reverse=True)
 
-    if not info_data:
-        return jsonify({"error": last_err or "فشل في جلب معلومات الفيديو"}), 500
-
-    # ── بناء قائمة الجودات ──
-    formats, seen = [], set()
-    for f in info_data.get("formats", []):
-        if f.get("vcodec", "none") == "none": continue
-        h    = f.get("height")
-        note = f.get("format_note", "")
-        ext  = f.get("ext", "mp4")
-        key  = str(h) if h else note
-        if not key or key in seen: continue
-        # يوتيوب: فقط المدمجة
-        if plat == "youtube" and f.get("acodec", "none") == "none": continue
-        seen.add(key)
-        formats.append({
-            "id":          f.get("format_id"),
-            "ext":         ext,
-            "height":      h,
-            "filesize":    f.get("filesize") or f.get("filesize_approx"),
-            "format_note": note,
+        return jsonify({
+            "title": info_data.get("title"),
+            "thumbnail": info_data.get("thumbnail"),
+            "duration": info_data.get("duration"),
+            "platform": plat,
+            "formats": formats[:8]
         })
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
-    formats.sort(key=lambda x: x.get("height") or 0, reverse=True)
-
-    return jsonify({
-        "title":     info_data.get("title"),
-        "thumbnail": info_data.get("thumbnail"),
-        "duration":  info_data.get("duration"),
-        "platform":  plat,
-        "formats":   formats[:8],
-    })
-
-
-@app.route("/download", methods=["POST", "OPTIONS"])
+@app.route("/download", methods=["POST","OPTIONS"])
 def download():
-    if request.method == "OPTIONS":
-        return '', 204
-
+    if request.method == "OPTIONS": return '', 204
     data = request.get_json(silent=True) or {}
-    url  = data.get("url", "").strip()
-    fmt  = data.get("format", "")
-    if not url:
-        return jsonify({"error": "لم يتم توفير الرابط"}), 400
+    url = data.get("url","").strip()
+    fmt = data.get("format", "best[ext=mp4]/best")
+    if not url: return jsonify({"error": "لم يتم توفير الرابط"}), 400
 
-    url      = fix_url(url)
-    plat     = detect_platform(url)
-    fileid   = str(uuid.uuid4())
-    path     = os.path.join(DOWNLOAD_FOLDER, fileid)
-    outtmpl  = path + ".%(ext)s"
+    url = fix_url(url)
+    plat = detect_platform(url)
+    fileid = str(uuid.uuid4())
+    path = os.path.join(DOWNLOAD_FOLDER, fileid)
 
-    # قائمة الفورمات للمحاولة
-    fmt_list = [fmt] + FORMATS.get(plat, FORMATS["generic"]) if fmt else FORMATS.get(plat, FORMATS["generic"])
+    opts = build_opts(plat, path + ".%(ext)s")
+    opts["format"] = fmt
 
-    info_data = None
-    last_err  = None
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info_data = ydl.extract_info(url, download=True)
 
-    for try_fmt in fmt_list:
-        # نظف أي ملفات من محاولة سابقة
-        for f in glob.glob(path + ".*"): os.remove(f)
-        try:
-            info_data = try_download(url, plat, outtmpl, try_fmt)
-            files = glob.glob(path + ".*")
-            if files and max(os.path.getsize(f) for f in files) > 1000:
-                break  # نجح
-            info_data = None
-        except Exception as e:
-            last_err = str(e)
-            print(f"[download] {plat} fmt={try_fmt} failed: {e}")
-            continue
+        files = glob.glob(path + ".*")
+        if not files: return jsonify({"error": "فشل في إنشاء الملف"}), 500
 
-    files = glob.glob(path + ".*")
-    if not files or (files and max(os.path.getsize(f) for f in files) < 1000):
-        return jsonify({"error": last_err or "فشل في تحميل الفيديو"}), 500
+        final_path = max(files, key=os.path.getsize)
+        ext = os.path.splitext(final_path)[1].lstrip('.') or "mp4"
+        title = clean_title(info_data.get("title") if info_data else None)
+        print(f"[{plat}] {final_path} — {os.path.getsize(final_path)//1024}KB")
 
-    final_path = max(files, key=os.path.getsize)
-    ext        = os.path.splitext(final_path)[1].lstrip('.') or "mp4"
-    title      = clean_title(info_data.get("title") if info_data else None)
-    size_kb    = os.path.getsize(final_path) // 1024
-
-    print(f"[download] [{plat}] {title}.{ext} — {size_kb} KB")
-
-    return send_file(
-        final_path,
-        as_attachment=True,
-        download_name=f"{title}.{ext}",
-        mimetype="video/mp4",
-    )
-
-
-# ── Background tasks ──────────────────────────────────────────
+        return send_file(final_path, as_attachment=True, download_name=f"{title}.{ext}", mimetype="video/mp4")
+    except Exception as e:
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
 def delete_old():
     while True:
         try:
             now = time.time()
-            for f in glob.glob(os.path.join(DOWNLOAD_FOLDER, "*")):
+            for f in glob.glob(os.path.join(DOWNLOAD_FOLDER,"*")):
                 if os.path.isfile(f) and now - os.path.getmtime(f) > 600:
-                    try: os.remove(f)
-                    except: pass
+                    os.remove(f)
         except: pass
         time.sleep(60)
 
