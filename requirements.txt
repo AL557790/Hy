@@ -1,0 +1,13 @@
+# Web Framework
+flask==3.0.0
+flask-cors==4.0.0
+gunicorn==21.2.0
+
+# Video Download
+yt-dlp==2024.3.10
+
+# Utilities
+requests==2.31.0
+
+# Optional: لإدارة المتغيرات البيئية
+python-dotenv==1.0.0
